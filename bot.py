@@ -111,7 +111,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Content-Type": "application/json"
             },
             json={
-                "model": "qwen/qwen3.5-122b-a10b",
+                "model": "qwen/qwen3.5-397b-a17b",
                 "messages": messages,
                 "max_tokens": 300
             },
