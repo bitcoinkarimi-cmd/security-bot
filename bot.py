@@ -1,13 +1,11 @@
 import os
 import sqlite3
-import httpx
-import asyncio
 from datetime import datetime
+import asyncio
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-HAIO_API_KEY = os.environ.get("HAIO_API_KEY")
 
 # ---------------- DB ----------------
 conn = sqlite3.connect("crm.db", check_same_thread=False)
@@ -26,19 +24,17 @@ CREATE TABLE IF NOT EXISTS customers (
 """)
 conn.commit()
 
-# ---------------- CONFIG ----------------
-SYSTEM_PROMPT = "تو کارشناس فروش هستی. کوتاه و مرحله‌ای سوال بپرس."
-
+# ---------------- DATA ----------------
 stage_text = {
-    1: "خانه، مغازه یا پروژه؟",
+    1: "برای کجاست؟ خانه یا مغازه یا پروژه؟",
     2: "داخلی یا خارجی؟",
     3: "چند دوربین؟",
     4: "بودجه حدودی؟"
 }
 
-# ---------------- CORE ----------------
+# ---------------- HELP ----------------
 def get_customer(user):
-    cursor.execute("SELECT stage, score, status FROM customers WHERE user_id=?", (user.id,))
+    cursor.execute("SELECT stage, score FROM customers WHERE user_id=?", (user.id,))
     row = cursor.fetchone()
 
     if not row:
@@ -47,81 +43,51 @@ def get_customer(user):
         VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (user.id, user.full_name, user.username or "", 1, 0, "new", datetime.now().isoformat()))
         conn.commit()
-        return 1, 0, "new"
+        return 1, 0
 
     return row
 
 
-def update_customer(user_id, **kwargs):
-    for k, v in kwargs.items():
-        cursor.execute(f"UPDATE customers SET {k}=? WHERE user_id=?", (v, user_id))
+def update(user_id, stage=None, score=None):
+    if stage is not None:
+        cursor.execute("UPDATE customers SET stage=? WHERE user_id=?", (stage, user_id))
+    if score is not None:
+        cursor.execute("UPDATE customers SET score=? WHERE user_id=?", (score, user_id))
     conn.commit()
 
 
 def calc_score(text, stage):
     score = 0
-    if any(w in text for w in ["قیمت", "میخوام", "خرید", "نصب"]):
+    if "قیمت" in text or "میخوام" in text:
         score += 30
-    if any(w in text for w in ["بودجه", "چند", "هزینه"]):
+    if "بودجه" in text or "چند" in text:
         score += 20
     score += stage * 10
     return min(score, 100)
 
-
-# ---------------- FOLLOW UP ----------------
-async def follow_up(context, user_id):
-    await asyncio.sleep(60 * 60 * 2)
-
-    cursor.execute("SELECT status FROM customers WHERE user_id=?", (user_id,))
-    row = cursor.fetchone()
-
-    if row and row[0] in ["hot"]:
-        try:
-            await context.bot.send_message(
-                chat_id=user_id,
-                text="👋 هنوز تصمیم نگرفتی؟ اگر بخوای امروز برات بهترین پکیج رو پیشنهاد می‌دم."
-            )
-        except:
-            pass
-
-
-# ---------------- START ----------------
+# ---------------- BOT ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [["🏠 خانه", "🏪 مغازه"], ["🏢 پروژه"]]
 
     await update.message.reply_text(
-        "سلام 👋 برای چه محیطی دوربین میخوای؟",
+        "سلام 👋 چی نیاز داری؟",
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     )
 
 
-# ---------------- MAIN HANDLER ----------------
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
     text = update.message.text
 
-    stage, score, status = get_customer(user)
+    stage, score = get_customer(user)
 
     score = calc_score(text, stage)
     stage += 1
 
-    update_customer(user.id, stage=stage, score=score)
+    update(user.id, stage=stage, score=score)
 
-    # HOT LEAD
     if score >= 70:
-        update_customer(user.id, status="hot")
-
-        reply = f"""
-🔥 پیشنهاد ویژه
-
-📦 پکیج مناسب شما آماده است
-💰 حدود قیمت: اقتصادی تا حرفه‌ای
-
-برای ثبت سفارش دکمه زیر را بزن
-"""
-
-        context.application.create_task(follow_up(context, user.id))
-
+        reply = "🔥 پکیج مناسب شما آماده است\nبرای ثبت سفارش دکمه زیر را بزن"
     else:
         reply = stage_text.get(stage, "بیشتر توضیح بده 🙂")
 
@@ -133,6 +99,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ---------------- ORDER ----------------
-async def order_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update
+async def order(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.text == "📦 ثبت سفارش":
+        await update.message.reply_text("✅ سفارش ثبت شد")
+
+
+def main():
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, order))
+
+    print("Bot running...")
+    app.run_polling()
+
+
+if __name__ == "__main__":
+    main()
